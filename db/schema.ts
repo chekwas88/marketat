@@ -39,8 +39,8 @@ export const organisationTypeEnum = pgEnum('organisation_type', [
 // Users Table
 export const users = pgTable('users', {
   id: uuid().primaryKey().defaultRandom(),
-  email: text('email').notNull().unique(),
-  password: text().notNull(),
+  email: varchar({ length: 255 }).notNull().unique(),
+  passwordHash: text().notNull(),
   firstName: varchar({ length: 100 }),
   lastName: varchar({ length: 100 }),
   phone: varchar({ length: 20 }),
@@ -54,29 +54,41 @@ export const users = pgTable('users', {
 ]);
 
 // Organisations Table
+// Note: Organisations are populated from map search (e.g., Google Places API)
+// Users discover and select them, they are not created manually by users
 export const organisations = pgTable('organisations', {
   id: uuid().primaryKey().defaultRandom(),
+  placeId: varchar({ length: 255 }).unique(), // Google Places ID or other map provider ID
   name: varchar({ length: 255 }).notNull(),
-  email: text('email'),
+  email: varchar({ length: 255 }),
   phone: varchar({ length: 20 }),
   address: text(),
   city: varchar({ length: 100 }),
   state: varchar({ length: 100 }),
   country: varchar({ length: 100 }),
   postalCode: varchar({ length: 20 }),
-  latitude: varchar({ length: 50 }),
-  longitude: varchar({ length: 50 }),
+  latitude: varchar({ length: 50 }).notNull(), // Required for map integration
+  longitude: varchar({ length: 50 }).notNull(), // Required for map integration
   type: organisationTypeEnum(),
   website: text(),
   description: text(),
+  businessStatus: varchar({ length: 50 }), // e.g., "OPERATIONAL", "CLOSED_TEMPORARILY"
+  rating: varchar({ length: 10 }), // e.g., "4.5"
+  userRatingsTotal: integer(), // Number of reviews
+  photoReference: text(), // Reference to business photo from map provider
+  openingHours: jsonb().$type<{
+    weekday_text?: string[];
+    open_now?: boolean;
+  }>(),
   isActive: boolean().default(true).notNull(),
   contactPerson: varchar({ length: 255 }),
-  createdBy: uuid().references(() => users.id),
   createdAt: timestamp().defaultNow().notNull(),
   updatedAt: timestamp().defaultNow().notNull(),
 }, (table) => [
+  uniqueIndex('org_place_id_idx').on(table.placeId),
   index('org_name_idx').on(table.name),
   index('org_location_idx').on(table.latitude, table.longitude),
+  index('org_type_idx').on(table.type),
 ]);
 
 // Appointments Table
@@ -122,18 +134,20 @@ export const notes = pgTable('notes', {
   index('note_user_idx').on(table.userId),
 ]);
 
-// Routes Table (for optimized daily routes)
+// Routes Table (stores the user's selected appointments for the day)
+// Note: Route optimization is handled by the map on frontend (e.g., Google Maps Directions API)
+// This table stores the appointments scheduled for a day and their order after frontend optimization
 export const routes = pgTable('routes', {
   id: uuid().primaryKey().defaultRandom(),
   userId: uuid().references(() => users.id, { onDelete: 'cascade' }).notNull(),
   routeDate: timestamp().notNull(),
-  startLocation: jsonb().$type<{ lat: number; lng: number; address?: string }>(),
-  endLocation: jsonb().$type<{ lat: number; lng: number; address?: string }>(),
-  appointmentSequence: jsonb().$type<string[]>(), // Array of appointment IDs in order
-  totalDistance: varchar({ length: 50 }), // e.g., "25.5 km"
-  estimatedDuration: integer(), // in minutes
-  routePolyline: text(), // Google Maps polyline
-  isOptimized: boolean().default(false),
+  appointmentIds: jsonb().$type<string[]>(), // Array of appointment IDs in optimized order from map
+  routeMetadata: jsonb().$type<{
+    totalDistance?: string; // e.g., "25.5 km" - from map API
+    totalDuration?: string; // e.g., "45 mins" - from map API
+    startAddress?: string;
+    endAddress?: string;
+  }>(),
   createdAt: timestamp().defaultNow().notNull(),
   updatedAt: timestamp().defaultNow().notNull(),
 }, (table) => [
@@ -186,11 +200,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   activityLogs: many(activityLogs),
 }));
 
-export const organisationsRelations = relations(organisations, ({ one, many }) => ({
-  creator: one(users, {
-    fields: [organisations.createdBy],
-    references: [users.id],
-  }),
+export const organisationsRelations = relations(organisations, ({ many }) => ({
   appointments: many(appointments),
 }));
 
